@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { getUserData, enrichRequests } = require('../mockData');
+const { getUserData, enrichRequests, sendFriendRequest } = require('../mockData');
 
 /**
  * @swagger
@@ -218,6 +218,96 @@ router.get('/requests', requireAuth, (req, res) => {
       limit: limitNum,
       offset: offsetNum,
     },
+  });
+});
+
+/**
+ * @swagger
+ * /friends/request:
+ *   post:
+ *     summary: Send a friend request to another user
+ *     tags: [Friends]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - username
+ *             properties:
+ *               username:
+ *                 type: string
+ *                 example: "jane_doe"
+ *                 description: Username of the user to send a friend request to
+ *     responses:
+ *       201:
+ *         description: Friend request sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   $ref: '#/components/schemas/PendingRequest'
+ *       400:
+ *         description: Validation error or already friends/request exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ */
+router.post('/request', requireAuth, (req, res) => {
+  const { username } = req.body;
+  const userId = req.user.id;
+
+  if (!username || username.trim().length === 0) {
+    return res.status(400).json({
+      error: {
+        code: 'validation_error',
+        message: 'Username is required',
+      },
+    });
+  }
+
+  if (username === req.user.username) {
+    return res.status(400).json({
+      error: {
+        code: 'validation_error',
+        message: 'Cannot send friend request to yourself',
+      },
+    });
+  }
+
+  const result = sendFriendRequest(userId, username.trim());
+
+  if (result.error === 'already_friends') {
+    return res.status(400).json({
+      error: {
+        code: 'already_friends',
+        message: 'You are already friends with this user',
+      },
+    });
+  }
+
+  if (result.error === 'request_already_sent') {
+    return res.status(400).json({
+      error: {
+        code: 'request_already_sent',
+        message: 'Friend request has already been sent to this user',
+      },
+    });
+  }
+
+  // Enrich with relativeTimestamp
+  const enrichedRequest = enrichRequests([result])[0];
+
+  res.status(201).json({
+    data: enrichedRequest,
   });
 });
 
