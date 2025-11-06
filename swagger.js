@@ -175,6 +175,11 @@ const options = {
               type: 'number',
               example: 2,
             },
+            likedByCurrentUser: {
+              type: 'boolean',
+              description: 'Whether the current authenticated user has liked this comment',
+              example: false,
+            },
           },
           required: ['id', 'username', 'profileImage', 'text', 'timestamp'],
         },
@@ -212,6 +217,11 @@ const options = {
             likes: {
               type: 'number',
               example: 12,
+            },
+            likedByCurrentUser: {
+              type: 'boolean',
+              description: 'Whether the current authenticated user has liked this post',
+              example: false,
             },
             comments: {
               type: 'array',
