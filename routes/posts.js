@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
 const { getUserData, enrichPosts, createPost, addComment, getRelativeTimestamp, togglePostLike, toggleCommentLike } = require('../mockData');
-
+// coment
 /**
  * @swagger
  * /posts:
