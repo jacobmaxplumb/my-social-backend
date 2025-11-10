@@ -1,7 +1,56 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { getUserData, enrichPosts, createPost, addComment, getRelativeTimestamp, togglePostLike, toggleCommentLike } = require('../mockData');
+const db = require('../db/knex');
+const { toRelativeTime } = require('../utils/time');
+
+const parseLimit = value => {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    return 20;
+  }
+  return Math.min(parsed, 100);
+};
+
+const parseOffset = value => {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+};
+
+const formatComment = (comment, likeCounts, likedByUserSet) => {
+  const likes = likeCounts.get(comment.id) ?? 0;
+
+  return {
+    id: String(comment.id),
+    username: comment.username,
+    profileImage: comment.profileImage,
+    text: comment.text,
+    timestamp: new Date(comment.createdAt).toISOString(),
+    relativeTimestamp: toRelativeTime(comment.createdAt),
+    likes,
+    likedByCurrentUser: likedByUserSet.has(comment.id),
+  };
+};
+
+const formatPost = (post, likeCounts, likedByUserSet, commentsByPostId, commentLikeCounts, commentLikedByUserSet) => {
+  const likes = likeCounts.get(post.id) ?? 0;
+  const comments = commentsByPostId.get(post.id) ?? [];
+
+  return {
+    id: String(post.id),
+    username: post.username,
+    profileImage: post.profileImage,
+    timestamp: new Date(post.createdAt).toISOString(),
+    relativeTimestamp: toRelativeTime(post.createdAt),
+    text: post.text,
+    likes,
+    likedByCurrentUser: likedByUserSet.has(post.id),
+    comments: comments.map(comment => formatComment(comment, commentLikeCounts, commentLikedByUserSet)),
+  };
+};
 
 /**
  * @swagger
@@ -41,31 +90,140 @@ const { getUserData, enrichPosts, createPost, addComment, getRelativeTimestamp, 
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get('/', requireAuth, (req, res) => {
-  const { limit = 20, offset = 0 } = req.query;
-  const userId = req.user.id;
-  const userData = getUserData(userId);
+router.get('/', requireAuth, async (req, res) => {
+  const limitNum = parseLimit(req.query.limit ?? 20);
+  const offsetNum = parseOffset(req.query.offset ?? 0);
+  const userId = Number(req.user.id);
 
-  // Get posts (feed includes user's posts and friends' posts)
-  const posts = [...userData.posts];
+  try {
+    const totalResult = await db('posts').count({ count: '*' }).first();
+    const total = Number(totalResult?.count ?? 0);
 
-  // Enrich with relativeTimestamp and likedByCurrentUser
-  const enrichedPosts = enrichPosts(posts, userId);
+    const postRows = await db('posts as p')
+      .join('users as u', 'p.user_id', 'u.id')
+      .select(
+        'p.id',
+        'u.username',
+        'u.profile_image as profileImage',
+        'p.text',
+        'p.created_at as createdAt'
+      )
+      .orderBy('p.created_at', 'desc')
+      .limit(limitNum)
+      .offset(offsetNum);
 
-  // Pagination
-  const total = enrichedPosts.length;
-  const limitNum = parseInt(limit, 10);
-  const offsetNum = parseInt(offset, 10);
-  const paginatedPosts = enrichedPosts.slice(offsetNum, offsetNum + limitNum);
+    const postIds = postRows.map(row => row.id);
 
-  res.json({
-    data: paginatedPosts,
-    pagination: {
-      total,
-      limit: limitNum,
-      offset: offsetNum,
-    },
-  });
+    const postLikeCounts = new Map();
+    const postLikedByUser = new Set();
+    const commentsByPostId = new Map();
+    const commentLikeCounts = new Map();
+    const commentLikedByUser = new Set();
+
+    if (postIds.length) {
+      const likesCountsRows = await db('post_likes')
+        .whereIn('post_id', postIds)
+        .select('post_id')
+        .count({ count: '*' })
+        .groupBy('post_id');
+
+      likesCountsRows.forEach(row => {
+        postLikeCounts.set(row.post_id, Number(row.count));
+      });
+
+      const likedRows = await db('post_likes')
+        .whereIn('post_id', postIds)
+        .andWhere('user_id', userId)
+        .select('post_id');
+
+      likedRows.forEach(row => {
+        postLikedByUser.add(row.post_id);
+      });
+
+      const commentRows = await db('comments as c')
+        .join('users as u', 'c.user_id', 'u.id')
+        .whereIn('c.post_id', postIds)
+        .select(
+          'c.id',
+          'c.post_id',
+          'u.username',
+          'u.profile_image as profileImage',
+          'c.text',
+          'c.created_at as createdAt'
+        )
+        .orderBy('c.created_at', 'asc');
+
+      commentRows.forEach(row => {
+        const group = commentsByPostId.get(row.post_id) || [];
+        group.push({
+          id: row.id,
+          postId: row.post_id,
+          username: row.username,
+          profileImage: row.profileImage,
+          text: row.text,
+          createdAt: row.createdAt,
+        });
+        commentsByPostId.set(row.post_id, group);
+      });
+
+      const commentIds = commentRows.map(row => row.id);
+
+      if (commentIds.length) {
+        const commentLikesRows = await db('comment_likes')
+          .whereIn('comment_id', commentIds)
+          .select('comment_id')
+          .count({ count: '*' })
+          .groupBy('comment_id');
+
+        commentLikesRows.forEach(row => {
+          commentLikeCounts.set(row.comment_id, Number(row.count));
+        });
+
+        const commentLikedRows = await db('comment_likes')
+          .whereIn('comment_id', commentIds)
+          .andWhere('user_id', userId)
+          .select('comment_id');
+
+        commentLikedRows.forEach(row => {
+          commentLikedByUser.add(row.comment_id);
+        });
+      }
+    }
+
+    const data = postRows.map(row =>
+      formatPost(
+        {
+          id: row.id,
+          username: row.username,
+          profileImage: row.profileImage,
+          text: row.text,
+          createdAt: row.createdAt,
+        },
+        postLikeCounts,
+        postLikedByUser,
+        commentsByPostId,
+        commentLikeCounts,
+        commentLikedByUser
+      )
+    );
+
+    res.json({
+      data,
+      pagination: {
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch posts error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to retrieve posts',
+      },
+    });
+  }
 });
 
 /**
@@ -104,9 +262,9 @@ router.get('/', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
   const { text } = req.body;
-  const userId = req.user.id;
+  const userId = Number(req.user.id);
 
   if (!text || text.trim().length === 0) {
     return res.status(400).json({
@@ -126,10 +284,53 @@ router.post('/', requireAuth, (req, res) => {
     });
   }
 
-  const newPost = createPost(userId, text.trim());
-  const enrichedPost = enrichPosts([newPost], userId)[0];
+  const trimmedText = text.trim();
+  const createdAt = new Date().toISOString();
 
-  res.status(201).json(enrichedPost);
+  try {
+    const [postId] = await db('posts').insert({
+      user_id: userId,
+      text: trimmedText,
+      created_at: createdAt,
+    });
+
+    const postRow = await db('posts as p')
+      .join('users as u', 'p.user_id', 'u.id')
+      .select(
+        'p.id',
+        'u.username',
+        'u.profile_image as profileImage',
+        'p.text',
+        'p.created_at as createdAt'
+      )
+      .where('p.id', postId)
+      .first();
+
+    const formatted = formatPost(
+      {
+        id: postRow.id,
+        username: postRow.username,
+        profileImage: postRow.profileImage,
+        text: postRow.text,
+        createdAt: postRow.createdAt,
+      },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      new Set()
+    );
+
+    res.status(201).json(formatted);
+  } catch (error) {
+    console.error('Create post error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to create post',
+      },
+    });
+  }
 });
 
 /**
@@ -181,10 +382,10 @@ router.post('/', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.post('/:postId/comments', requireAuth, (req, res) => {
+router.post('/:postId/comments', requireAuth, async (req, res) => {
   const { postId } = req.params;
   const { text } = req.body;
-  const userId = req.user.id;
+  const userId = Number(req.user.id);
 
   if (!text || text.trim().length === 0) {
     return res.status(400).json({
@@ -204,9 +405,9 @@ router.post('/:postId/comments', requireAuth, (req, res) => {
     });
   }
 
-  const newComment = addComment(userId, postId, text.trim());
+  const numericPostId = parseInt(postId, 10);
 
-  if (!newComment) {
+  if (Number.isNaN(numericPostId)) {
     return res.status(404).json({
       error: {
         code: 'not_found',
@@ -215,15 +416,61 @@ router.post('/:postId/comments', requireAuth, (req, res) => {
     });
   }
 
-  // Enrich with relativeTimestamp and likedByCurrentUser
-  const enrichedComment = {
-    ...newComment,
-    relativeTimestamp: getRelativeTimestamp(newComment.timestamp),
-    likes: newComment.likedBy ? newComment.likedBy.length : 0,
-    likedByCurrentUser: false, // New comment, not liked yet
-  };
+  const trimmedText = text.trim();
+  const createdAt = new Date().toISOString();
 
-  res.status(201).json(enrichedComment);
+  try {
+    const postExists = await db('posts').where({ id: numericPostId }).first();
+
+    if (!postExists) {
+      return res.status(404).json({
+        error: {
+          code: 'not_found',
+          message: 'Post not found',
+        },
+      });
+    }
+
+    const [commentId] = await db('comments').insert({
+      post_id: numericPostId,
+      user_id: userId,
+      text: trimmedText,
+      created_at: createdAt,
+    });
+
+    const commentRow = await db('comments as c')
+      .join('users as u', 'c.user_id', 'u.id')
+      .select(
+        'c.id',
+        'u.username',
+        'u.profile_image as profileImage',
+        'c.text',
+        'c.created_at as createdAt'
+      )
+      .where('c.id', commentId)
+      .first();
+
+    const formattedComment = {
+      id: String(commentRow.id),
+      username: commentRow.username,
+      profileImage: commentRow.profileImage,
+      text: commentRow.text,
+      timestamp: new Date(commentRow.createdAt).toISOString(),
+      relativeTimestamp: toRelativeTime(commentRow.createdAt),
+      likes: 0,
+      likedByCurrentUser: false,
+    };
+
+    res.status(201).json(formattedComment);
+  } catch (error) {
+    console.error('Create comment error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to create comment',
+      },
+    });
+  }
 });
 
 /**
@@ -264,13 +511,13 @@ router.post('/:postId/comments', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.post('/:postId/like', requireAuth, (req, res) => {
+router.post('/:postId/like', requireAuth, async (req, res) => {
   const { postId } = req.params;
-  const userId = req.user.id;
+  const userId = Number(req.user.id);
 
-  const result = togglePostLike(userId, postId);
+  const numericPostId = parseInt(postId, 10);
 
-  if (!result) {
+  if (Number.isNaN(numericPostId)) {
     return res.status(404).json({
       error: {
         code: 'not_found',
@@ -279,7 +526,60 @@ router.post('/:postId/like', requireAuth, (req, res) => {
     });
   }
 
-  res.json(result);
+  try {
+    const post = await db('posts').where({ id: numericPostId }).first();
+
+    if (!post) {
+      return res.status(404).json({
+        error: {
+          code: 'not_found',
+          message: 'Post not found',
+        },
+      });
+    }
+
+    const existing = await db('post_likes')
+      .where({
+        post_id: numericPostId,
+        user_id: userId,
+      })
+      .first();
+
+    let liked = false;
+
+    if (existing) {
+      await db('post_likes')
+        .where({
+          post_id: numericPostId,
+          user_id: userId,
+        })
+        .del();
+    } else {
+      await db('post_likes').insert({
+        post_id: numericPostId,
+        user_id: userId,
+        created_at: new Date().toISOString(),
+      });
+      liked = true;
+    }
+
+    const countResult = await db('post_likes')
+      .where({ post_id: numericPostId })
+      .count({ count: '*' })
+      .first();
+
+    const likes = Number(countResult?.count ?? 0);
+
+    res.json({ liked, likes });
+  } catch (error) {
+    console.error('Toggle post like error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to toggle like',
+      },
+    });
+  }
 });
 
 /**
@@ -326,13 +626,14 @@ router.post('/:postId/like', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.post('/:postId/comments/:commentId/like', requireAuth, (req, res) => {
+router.post('/:postId/comments/:commentId/like', requireAuth, async (req, res) => {
   const { postId, commentId } = req.params;
-  const userId = req.user.id;
+  const userId = Number(req.user.id);
 
-  const result = toggleCommentLike(userId, postId, commentId);
+  const numericPostId = parseInt(postId, 10);
+  const numericCommentId = parseInt(commentId, 10);
 
-  if (!result) {
+  if (Number.isNaN(numericPostId) || Number.isNaN(numericCommentId)) {
     return res.status(404).json({
       error: {
         code: 'not_found',
@@ -341,7 +642,65 @@ router.post('/:postId/comments/:commentId/like', requireAuth, (req, res) => {
     });
   }
 
-  res.json(result);
+  try {
+    const comment = await db('comments')
+      .where({
+        id: numericCommentId,
+        post_id: numericPostId,
+      })
+      .first();
+
+    if (!comment) {
+      return res.status(404).json({
+        error: {
+          code: 'not_found',
+          message: 'Post or comment not found',
+        },
+      });
+    }
+
+    const existing = await db('comment_likes')
+      .where({
+        comment_id: numericCommentId,
+        user_id: userId,
+      })
+      .first();
+
+    let liked = false;
+
+    if (existing) {
+      await db('comment_likes')
+        .where({
+          comment_id: numericCommentId,
+          user_id: userId,
+        })
+        .del();
+    } else {
+      await db('comment_likes').insert({
+        comment_id: numericCommentId,
+        user_id: userId,
+        created_at: new Date().toISOString(),
+      });
+      liked = true;
+    }
+
+    const countResult = await db('comment_likes')
+      .where({ comment_id: numericCommentId })
+      .count({ count: '*' })
+      .first();
+
+    const likes = Number(countResult?.count ?? 0);
+
+    res.json({ liked, likes });
+  } catch (error) {
+    console.error('Toggle comment like error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to toggle like',
+      },
+    });
+  }
 });
 
 module.exports = router;

@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { requireAuth } = require('../middleware/auth');
-const { getUserData, enrichRequests, sendFriendRequest } = require('../mockData');
+const db = require('../db/knex');
+const { toRelativeTime } = require('../utils/time');
 
 /**
  * @swagger
@@ -52,37 +53,68 @@ const { getUserData, enrichRequests, sendFriendRequest } = require('../mockData'
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get('/', requireAuth, (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
   const { status, search, limit = 20, offset = 0 } = req.query;
-  const userId = req.user.id;
-  const userData = getUserData(userId);
+  const userId = Number(req.user.id);
 
-  let friends = [...userData.friends];
+  const limitNum = Number.isNaN(Number(limit)) ? 20 : parseInt(limit, 10);
+  const offsetNum = Number.isNaN(Number(offset)) ? 0 : parseInt(offset, 10);
 
-  // Apply filters
-  if (status) {
-    friends = friends.filter(f => f.status === status);
+  try {
+    const baseQuery = db('friendships as f')
+      .join('users as u', 'f.friend_user_id', 'u.id')
+      .where('f.user_id', userId);
+
+    if (status) {
+      baseQuery.andWhere('f.status', status);
+    }
+
+    if (search) {
+      const searchTerm = `%${search.trim().toLowerCase()}%`;
+      baseQuery.andWhereRaw('lower(u.username) LIKE ?', [searchTerm]);
+    }
+
+    const totalResult = await baseQuery.clone().count({ count: '*' }).first();
+    const total = Number(totalResult?.count ?? 0);
+
+    const rows = await baseQuery
+      .clone()
+      .select(
+        'f.id',
+        'u.username',
+        'u.profile_image as profileImage',
+        'f.status',
+        'f.mutual_friends as mutualFriends'
+      )
+      .orderBy('u.username', 'asc')
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const data = rows.map(row => ({
+      id: String(row.id),
+      username: row.username,
+      profileImage: row.profileImage,
+      status: row.status || null,
+      mutualFriends: row.mutualFriends ?? 0,
+    }));
+
+    res.json({
+      data,
+      pagination: {
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch friends error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to retrieve friends',
+      },
+    });
   }
-
-  if (search) {
-    const searchLower = search.toLowerCase();
-    friends = friends.filter(f => f.username.toLowerCase().includes(searchLower));
-  }
-
-  // Pagination
-  const total = friends.length;
-  const limitNum = parseInt(limit, 10);
-  const offsetNum = parseInt(offset, 10);
-  const paginatedFriends = friends.slice(offsetNum, offsetNum + limitNum);
-
-  res.json({
-    data: paginatedFriends,
-    pagination: {
-      total,
-      limit: limitNum,
-      offset: offsetNum,
-    },
-  });
 });
 
 /**
@@ -123,27 +155,57 @@ router.get('/', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get('/suggestions', requireAuth, (req, res) => {
+router.get('/suggestions', requireAuth, async (req, res) => {
   const { limit = 20, offset = 0 } = req.query;
-  const userId = req.user.id;
-  const userData = getUserData(userId);
+  const userId = Number(req.user.id);
 
-  const suggestions = [...userData.suggestions];
+  const limitNum = Number.isNaN(Number(limit)) ? 20 : parseInt(limit, 10);
+  const offsetNum = Number.isNaN(Number(offset)) ? 0 : parseInt(offset, 10);
 
-  // Pagination
-  const total = suggestions.length;
-  const limitNum = parseInt(limit, 10);
-  const offsetNum = parseInt(offset, 10);
-  const paginatedSuggestions = suggestions.slice(offsetNum, offsetNum + limitNum);
+  try {
+    const baseQuery = db('friend_suggestions as fs')
+      .join('users as u', 'fs.suggested_user_id', 'u.id')
+      .where('fs.user_id', userId);
 
-  res.json({
-    data: paginatedSuggestions,
-    pagination: {
-      total,
-      limit: limitNum,
-      offset: offsetNum,
-    },
-  });
+    const totalResult = await baseQuery.clone().count({ count: '*' }).first();
+    const total = Number(totalResult?.count ?? 0);
+
+    const rows = await baseQuery
+      .clone()
+      .select(
+        'fs.id',
+        'u.username',
+        'u.profile_image as profileImage',
+        'fs.mutual_friends as mutualFriends'
+      )
+      .orderBy('fs.created_at', 'desc')
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const data = rows.map(row => ({
+      id: String(row.id),
+      username: row.username,
+      profileImage: row.profileImage,
+      mutualFriends: row.mutualFriends ?? 0,
+    }));
+
+    res.json({
+      data,
+      pagination: {
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch friend suggestions error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to retrieve friend suggestions',
+      },
+    });
+  }
 });
 
 /**
@@ -190,35 +252,93 @@ router.get('/suggestions', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get('/requests', requireAuth, (req, res) => {
+router.get('/requests', requireAuth, async (req, res) => {
   const { type, limit = 20, offset = 0 } = req.query;
-  const userId = req.user.id;
-  const userData = getUserData(userId);
+  const userId = Number(req.user.id);
 
-  let requests = [...userData.requests];
+  const limitNum = Number.isNaN(Number(limit)) ? 20 : parseInt(limit, 10);
+  const offsetNum = Number.isNaN(Number(offset)) ? 0 : parseInt(offset, 10);
 
-  // Apply filter
-  if (type) {
-    requests = requests.filter(r => r.type === type);
+  const includeIncoming = !type || type === 'incoming';
+  const includeOutgoing = !type || type === 'outgoing';
+
+  try {
+    let aggregated = [];
+
+    if (includeIncoming) {
+      const incoming = await db('friend_requests as fr')
+        .join('users as u', 'fr.sender_user_id', 'u.id')
+        .select(
+          'fr.id',
+          'u.username',
+          'u.profile_image as profileImage',
+          'fr.mutual_friends as mutualFriends',
+          'fr.created_at as createdAt'
+        )
+        .where('fr.receiver_user_id', userId)
+        .orderBy('fr.created_at', 'desc');
+
+      aggregated = aggregated.concat(
+        incoming.map(row => ({
+          id: String(row.id),
+          username: row.username,
+          profileImage: row.profileImage,
+          mutualFriends: row.mutualFriends ?? 0,
+          type: 'incoming',
+          sentAt: new Date(row.createdAt).toISOString(),
+          relativeTimestamp: toRelativeTime(row.createdAt),
+        }))
+      );
+    }
+
+    if (includeOutgoing) {
+      const outgoing = await db('friend_requests as fr')
+        .join('users as u', 'fr.receiver_user_id', 'u.id')
+        .select(
+          'fr.id',
+          'u.username',
+          'u.profile_image as profileImage',
+          'fr.mutual_friends as mutualFriends',
+          'fr.created_at as createdAt'
+        )
+        .where('fr.sender_user_id', userId)
+        .orderBy('fr.created_at', 'desc');
+
+      aggregated = aggregated.concat(
+        outgoing.map(row => ({
+          id: String(row.id),
+          username: row.username,
+          profileImage: row.profileImage,
+          mutualFriends: row.mutualFriends ?? 0,
+          type: 'outgoing',
+          sentAt: new Date(row.createdAt).toISOString(),
+          relativeTimestamp: toRelativeTime(row.createdAt),
+        }))
+      );
+    }
+
+    aggregated.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
+
+    const total = aggregated.length;
+    const paginated = aggregated.slice(offsetNum, offsetNum + limitNum);
+
+    res.json({
+      data: paginated,
+      pagination: {
+        total,
+        limit: limitNum,
+        offset: offsetNum,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch friend requests error:', error);
+    res.status(500).json({
+      error: {
+        code: 'internal_server_error',
+        message: 'Failed to retrieve friend requests',
+      },
+    });
   }
-
-  // Enrich with relativeTimestamp
-  requests = enrichRequests(requests);
-
-  // Pagination
-  const total = requests.length;
-  const limitNum = parseInt(limit, 10);
-  const offsetNum = parseInt(offset, 10);
-  const paginatedRequests = requests.slice(offsetNum, offsetNum + limitNum);
-
-  res.json({
-    data: paginatedRequests,
-    pagination: {
-      total,
-      limit: limitNum,
-      offset: offsetNum,
-    },
-  });
 });
 
 /**
@@ -261,9 +381,9 @@ router.get('/requests', requireAuth, (req, res) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.post('/request', requireAuth, (req, res) => {
+router.post('/request', requireAuth, async (req, res) => {
   const { username } = req.body;
-  const userId = req.user.id;
+  const userId = Number(req.user.id);
 
   if (!username || username.trim().length === 0) {
     return res.status(400).json({
@@ -274,7 +394,9 @@ router.post('/request', requireAuth, (req, res) => {
     });
   }
 
-  if (username === req.user.username) {
+  const normalized = username.trim().toLowerCase();
+
+  if (normalized === req.user.username) {
     return res.status(400).json({
       error: {
         code: 'validation_error',
@@ -283,32 +405,96 @@ router.post('/request', requireAuth, (req, res) => {
     });
   }
 
-  const result = sendFriendRequest(userId, username.trim());
+  try {
+    const targetUser = await db('users').where({ username: normalized }).first();
 
-  if (result.error === 'already_friends') {
-    return res.status(400).json({
+    if (!targetUser) {
+      return res.status(404).json({
+        error: {
+          code: 'user_not_found',
+          message: 'Target user was not found',
+        },
+      });
+    }
+
+    const existingFriendship = await db('friendships')
+      .where({
+        user_id: userId,
+        friend_user_id: targetUser.id,
+      })
+      .first();
+
+    if (existingFriendship) {
+      return res.status(400).json({
+        error: {
+          code: 'already_friends',
+          message: 'You are already friends with this user',
+        },
+      });
+    }
+
+    const existingRequest = await db('friend_requests')
+      .where({
+        sender_user_id: userId,
+        receiver_user_id: targetUser.id,
+      })
+      .first();
+
+    if (existingRequest) {
+      return res.status(400).json({
+        error: {
+          code: 'request_already_sent',
+          message: 'Friend request has already been sent to this user',
+        },
+      });
+    }
+
+    const reverseRequest = await db('friend_requests')
+      .where({
+        sender_user_id: targetUser.id,
+        receiver_user_id: userId,
+      })
+      .first();
+
+    if (reverseRequest) {
+      return res.status(400).json({
+        error: {
+          code: 'request_exists',
+          message: 'This user has already sent you a friend request',
+        },
+      });
+    }
+
+    const createdAt = new Date().toISOString();
+
+    const [requestId] = await db('friend_requests').insert({
+      sender_user_id: userId,
+      receiver_user_id: targetUser.id,
+      mutual_friends: 0,
+      status: 'pending',
+      created_at: createdAt,
+    });
+
+    res.status(201).json({
+      data: {
+        id: String(requestId),
+        username: targetUser.username,
+        profileImage: targetUser.profile_image || null,
+        mutualFriends: 0,
+        type: 'outgoing',
+        sentAt: createdAt,
+        relativeTimestamp: toRelativeTime(createdAt),
+      },
+    });
+  } catch (error) {
+    console.error('Create friend request error:', error);
+    res.status(500).json({
       error: {
-        code: 'already_friends',
-        message: 'You are already friends with this user',
+        code: 'internal_server_error',
+        message: 'Failed to create friend request',
       },
     });
   }
-
-  if (result.error === 'request_already_sent') {
-    return res.status(400).json({
-      error: {
-        code: 'request_already_sent',
-        message: 'Friend request has already been sent to this user',
-      },
-    });
-  }
-
-  // Enrich with relativeTimestamp
-  const enrichedRequest = enrichRequests([result])[0];
-
-  res.status(201).json({
-    data: enrichedRequest,
-  });
 });
 
 module.exports = router;

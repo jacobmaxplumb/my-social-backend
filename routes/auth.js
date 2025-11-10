@@ -2,33 +2,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
-
-// In-memory user store (for mock purposes)
-// In production, use a database
-// Seed users: both 'alex' and 'sarah' have password 'password'
-const users = [];
-
-// Initialize seed users with hashed passwords
-async function initializeSeedUsers() {
-  const defaultPassword = 'password';
-  const hashedPassword = await bcrypt.hash(defaultPassword, 10);
-  
-  users.push(
-    {
-      id: 'alex',
-      username: 'alex',
-      password: hashedPassword,
-    },
-    {
-      id: 'sarah',
-      username: 'sarah',
-      password: hashedPassword,
-    }
-  );
-}
-
-// Initialize on module load
-initializeSeedUsers().catch(console.error);
+const db = require('../db/knex');
 
 /**
  * @swagger
@@ -95,7 +69,9 @@ router.post('/register', async (req, res) => {
     });
   }
 
-  if (username.length < 3) {
+  const trimmedUsername = username.trim();
+
+  if (trimmedUsername.length < 3) {
     return res.status(400).json({
       error: {
         code: 'validation_error',
@@ -113,43 +89,55 @@ router.post('/register', async (req, res) => {
     });
   }
 
-  // Check if user already exists
-  const existingUser = users.find(u => u.username === username);
-  if (existingUser) {
-    return res.status(409).json({
+  const normalizedUsername = trimmedUsername.toLowerCase();
+
+  try {
+    const existingUser = await db('users').whereRaw('lower(username) = ?', [normalizedUsername]).first();
+    if (existingUser) {
+      return res.status(409).json({
+        error: {
+          code: 'username_taken',
+          message: 'Username is already taken',
+        },
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await db('users').insert({
+      username: normalizedUsername,
+      password_hash: hashedPassword,
+      profile_image: '👤',
+      status: 'online',
+    });
+
+    const createdUser = await db('users').where({ username: normalizedUsername }).first();
+
+    const token = jwt.sign(
+      {
+        sub: createdUser.id,
+        username: createdUser.username,
+      },
+      process.env.JWT_SECRET || 'default-secret-key-change-in-production',
+      { expiresIn: '7d' }
+    );
+
+    res.status(201).json({
+      token,
+      user: {
+        id: String(createdUser.id),
+        username: createdUser.username,
+      },
+    });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({
       error: {
-        code: 'username_taken',
-        message: 'Username is already taken',
+        code: 'internal_server_error',
+        message: 'Failed to register user',
       },
     });
   }
-
-  // Create new user
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const newUser = {
-    id: username.toLowerCase(),
-    username,
-    password: hashedPassword,
-  };
-  users.push(newUser);
-
-  // Generate JWT
-  const token = jwt.sign(
-    {
-      sub: newUser.id,
-      username: newUser.username,
-    },
-    process.env.JWT_SECRET || 'default-secret-key-change-in-production',
-    { expiresIn: '7d' }
-  );
-
-  res.status(201).json({
-    token,
-    user: {
-      id: newUser.id,
-      username: newUser.username,
-    },
-  });
 });
 
 /**
@@ -211,45 +199,56 @@ router.post('/login', async (req, res) => {
     });
   }
 
-  // Find user
-  const user = users.find(u => u.username === username);
-  if (!user) {
-    return res.status(401).json({
+  const normalizedUsername = username.trim().toLowerCase();
+
+  try {
+    const user = await db('users').where({ username: normalizedUsername }).first();
+
+    if (!user || !user.password_hash) {
+      return res.status(401).json({
+        error: {
+          code: 'invalid_credentials',
+          message: 'Invalid username or password',
+        },
+      });
+    }
+
+    const isValid = await bcrypt.compare(password, user.password_hash);
+
+    if (!isValid) {
+      return res.status(401).json({
+        error: {
+          code: 'invalid_credentials',
+          message: 'Invalid username or password',
+        },
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        sub: user.id,
+        username: user.username,
+      },
+      process.env.JWT_SECRET || 'default-secret-key-change-in-production',
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: String(user.id),
+        username: user.username,
+      },
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({
       error: {
-        code: 'invalid_credentials',
-        message: 'Invalid username or password',
+        code: 'internal_server_error',
+        message: 'Failed to login',
       },
     });
   }
-
-  // Verify password
-  const isValid = await bcrypt.compare(password, user.password);
-  if (!isValid) {
-    return res.status(401).json({
-      error: {
-        code: 'invalid_credentials',
-        message: 'Invalid username or password',
-      },
-    });
-  }
-
-  // Generate JWT
-  const token = jwt.sign(
-    {
-      sub: user.id,
-      username: user.username,
-    },
-    process.env.JWT_SECRET || 'default-secret-key-change-in-production',
-    { expiresIn: '7d' }
-  );
-
-  res.json({
-    token,
-    user: {
-      id: user.id,
-      username: user.username,
-    },
-  });
 });
 
 module.exports = router;

@@ -9,7 +9,7 @@ A Node.js Express API with JWT authentication and Swagger (OpenAPI 3) documentat
 - 👥 Friends management (current friends, suggestions, requests)
 - 📝 Social feed with posts and comments
 - 🔍 Pagination and filtering support
-- ✅ User-scoped mock data
+- 🗄️ SQLite data store managed with Knex migrations and seeds
 - ⏰ ISO 8601 timestamps with relative time helpers
 
 ## Quick Start
@@ -37,7 +37,13 @@ JWT_SECRET=your-secret-key-change-in-production
 PORT=3000
 ```
 
-4. Start the development server:
+4. Run the database migrations and seed data:
+```bash
+npm run migrate
+npm run seed
+```
+
+5. Start the development server:
 ```bash
 npm run dev
 ```
@@ -60,9 +66,9 @@ Once the server is running:
 
 ### Password Storage
 
-Passwords are hashed using bcrypt (10 rounds). For the mock seed users, passwords are stored as hashed values in memory.
+Passwords are hashed using bcrypt (10 rounds) and stored in the SQLite database.
 
-**Seed Users** (for testing):
+**Seed Users** (loaded via `npx knex seed:run`):
 - Username: `alex`, Password: `password`
 - Username: `sarah`, Password: `password`
 
@@ -80,7 +86,7 @@ Response:
 {
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
-    "id": "newuser",
+    "id": "7",
     "username": "newuser"
   }
 }
@@ -221,15 +227,14 @@ Common error codes:
 - `invalid_credentials` - Invalid username or password
 - `not_found` - Route not found
 
-## Mock Data
+## Seed Data
 
-Mock data is stored in-memory and scoped by user ID. Each user has their own set of:
-- Friends (with online/offline status)
-- Friend suggestions
-- Pending friend requests (incoming/outgoing)
-- Posts with comments
+The Knex seed script populates the database with:
+- Auth-ready users (`alex` / `password`, `sarah` / `password`)
+- Friends, suggestions, and pending requests for both users
+- Social posts, comments, and like interactions
 
-The seed users (`alex` and `sarah`) have different datasets to demonstrate user-scoped filtering.
+Feel free to modify `seeds/initial_data.js` to adjust the starting dataset.
 
 ## Development
 
@@ -239,14 +244,20 @@ The seed users (`alex` and `sarah`) have different datasets to demonstrate user-
 my-social-backend/
 ├── server.js           # Main Express server
 ├── swagger.js          # Swagger/OpenAPI configuration
-├── mockData.js         # In-memory mock data store
+├── db/
+│   └── knex.js         # Knex instance
+├── migrations/         # Database schema migrations
+├── seeds/              # Database seed data
 ├── routes/
 │   ├── auth.js        # Authentication routes
 │   ├── friends.js     # Friends endpoints
 │   └── posts.js       # Posts endpoints
 ├── middleware/
 │   └── auth.js        # JWT authentication middleware
+├── utils/
+│   └── time.js        # Relative time helpers
 ├── package.json
+├── knexfile.js
 └── README.md
 ```
 
