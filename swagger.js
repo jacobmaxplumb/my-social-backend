@@ -1,5 +1,23 @@
 const swaggerJsdoc = require('swagger-jsdoc');
 
+const buildServers = () => {
+  const servers = [];
+
+  if (process.env.SWAGGER_SERVER_URL) {
+    servers.push({
+      url: process.env.SWAGGER_SERVER_URL,
+      description: 'Configured server',
+    });
+  }
+
+  servers.push({
+    url: `http://localhost:${process.env.PORT || 3000}`,
+    description: 'Development server',
+  });
+
+  return servers;
+};
+
 const options = {
   definition: {
     openapi: '3.0.0',
@@ -8,12 +26,7 @@ const options = {
       version: '1.0.0',
       description: 'Express API with JWT authentication for social feed and friends',
     },
-    servers: [
-      {
-        url: `http://localhost:${process.env.PORT || 3000}`,
-        description: 'Development server',
-      },
-    ],
+    servers: buildServers(),
     components: {
       securitySchemes: {
         bearerAuth: {
