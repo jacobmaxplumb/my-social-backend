@@ -467,13 +467,14 @@ router.post('/request', requireAuth, async (req, res) => {
 
     const createdAt = new Date().toISOString();
 
-    const [requestId] = await db('friend_requests').insert({
+    const [requestResult] = await db('friend_requests').insert({
       sender_user_id: userId,
       receiver_user_id: targetUser.id,
       mutual_friends: 0,
       status: 'pending',
       created_at: createdAt,
-    });
+    }).returning('id');
+    const requestId = requestResult?.id ?? requestResult;
 
     res.status(201).json({
       data: {

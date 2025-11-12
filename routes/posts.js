@@ -288,11 +288,12 @@ router.post('/', requireAuth, async (req, res) => {
   const createdAt = new Date().toISOString();
 
   try {
-    const [postId] = await db('posts').insert({
+    const [result] = await db('posts').insert({
       user_id: userId,
       text: trimmedText,
       created_at: createdAt,
-    });
+    }).returning('id');
+    const postId = result?.id ?? result;
 
     const postRow = await db('posts as p')
       .join('users as u', 'p.user_id', 'u.id')
@@ -431,12 +432,13 @@ router.post('/:postId/comments', requireAuth, async (req, res) => {
       });
     }
 
-    const [commentId] = await db('comments').insert({
+    const [commentResult] = await db('comments').insert({
       post_id: numericPostId,
       user_id: userId,
       text: trimmedText,
       created_at: createdAt,
-    });
+    }).returning('id');
+    const commentId = commentResult?.id ?? commentResult;
 
     const commentRow = await db('comments as c')
       .join('users as u', 'c.user_id', 'u.id')
