@@ -288,6 +288,17 @@ router.post('/', requireAuth, async (req, res) => {
   const createdAt = new Date().toISOString();
 
   try {
+    // Verify user exists in database
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) {
+      return res.status(401).json({
+        error: {
+          code: 'user_not_found',
+          message: 'User from token not found in database',
+        },
+      });
+    }
+
     const [result] = await db('posts').insert({
       user_id: userId,
       text: trimmedText,
@@ -417,11 +428,22 @@ router.post('/:postId/comments', requireAuth, async (req, res) => {
     });
   }
 
-  const trimmedText = text.trim();
-  const createdAt = new Date().toISOString();
+    const trimmedText = text.trim();
+    const createdAt = new Date().toISOString();
 
-  try {
-    const postExists = await db('posts').where({ id: numericPostId }).first();
+    try {
+      // Verify user exists in database
+      const user = await db('users').where({ id: userId }).first();
+      if (!user) {
+        return res.status(401).json({
+          error: {
+            code: 'user_not_found',
+            message: 'User from token not found in database',
+          },
+        });
+      }
+
+      const postExists = await db('posts').where({ id: numericPostId }).first();
 
     if (!postExists) {
       return res.status(404).json({
@@ -529,6 +551,17 @@ router.post('/:postId/like', requireAuth, async (req, res) => {
   }
 
   try {
+    // Verify user exists in database
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) {
+      return res.status(401).json({
+        error: {
+          code: 'user_not_found',
+          message: 'User from token not found in database',
+        },
+      });
+    }
+
     const post = await db('posts').where({ id: numericPostId }).first();
 
     if (!post) {
@@ -645,6 +678,17 @@ router.post('/:postId/comments/:commentId/like', requireAuth, async (req, res) =
   }
 
   try {
+    // Verify user exists in database
+    const user = await db('users').where({ id: userId }).first();
+    if (!user) {
+      return res.status(401).json({
+        error: {
+          code: 'user_not_found',
+          message: 'User from token not found in database',
+        },
+      });
+    }
+
     const comment = await db('comments')
       .where({
         id: numericCommentId,

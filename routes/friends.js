@@ -406,6 +406,17 @@ router.post('/request', requireAuth, async (req, res) => {
   }
 
   try {
+    // Verify user exists in database
+    const currentUser = await db('users').where({ id: userId }).first();
+    if (!currentUser) {
+      return res.status(401).json({
+        error: {
+          code: 'user_not_found',
+          message: 'User from token not found in database',
+        },
+      });
+    }
+
     const targetUser = await db('users').where({ username: normalized }).first();
 
     if (!targetUser) {
